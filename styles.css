@@ -758,7 +758,7 @@ select:focus {
 
 .list-header {
     display: grid;
-    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 70px 70px 90px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 70px 70px 1.2fr 70px 70px 70px 80px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 14px 20px;
     background: var(--bg-2);
@@ -803,7 +803,7 @@ select:focus {
 
 .shop-row {
     display: grid;
-    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 70px 70px 90px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 70px 70px 1.2fr 70px 70px 70px 80px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 12px 20px;
     border-bottom: 1px solid var(--border);
@@ -869,13 +869,20 @@ select:focus {
     font-weight: 600;
 }
 
+.relative-value,
+.relative-value-each,
 .relative-cost,
-.relative-cost-each {
+.relative-cost-each,
+.relative-spread {
     color: var(--text-secondary);
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.8rem;
     font-weight: 600;
     text-align: center;
+}
+
+.relative-spread:not(:empty) {
+    color: var(--success);
 }
 
 .relative-cost-hint {
@@ -1108,7 +1115,7 @@ select:focus {
 
     .list-header,
     .shop-row {
-        grid-template-columns: 60px 1.5fr 60px 110px 60px 60px 60px 70px 1.2fr 80px 80px;
+        grid-template-columns: 60px 1.5fr 60px 60px 60px 110px 60px 60px 60px 70px 70px 1.2fr 80px 80px;
         font-size: 0.7rem;
         gap: 12px;
     }

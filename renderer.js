@@ -22,18 +22,26 @@ const SORT_HEADER_KEYS = {
     location: 'location',
     distance: 'distance',
     relativeCost: 'relativeCost',
-    relativeCostEach: 'relativeCostUnit'
+    relativeCostEach: 'relativeCostUnit',
+    relativeValue: 'relativeValue',
+    relativeValueEach: 'relativeValueUnit',
+    relativeSpread: 'relativeSpread'
 };
 
+/** Cost (Each) = Cost Qty ÷ Item Qty (payment per one sold item). Does not affect relative cost/value. */
 function getCostEach(costQty, itemQty) {
-    const qty = itemQty || 1;
-    const cost = costQty ?? 0;
+    const cost = Number(costQty);
+    const qty = Number(itemQty);
+    if (!Number.isFinite(cost) || !Number.isFinite(qty) || qty <= 0) {
+        return Number.isFinite(cost) ? cost : 0;
+    }
     return cost / qty;
 }
 
 function formatCostEach(costQty, itemQty) {
     const each = getCostEach(costQty, itemQty);
-    return Number.isInteger(each) ? each : Number(each.toFixed(2));
+    if (!Number.isFinite(each)) return '';
+    return Number.isInteger(each) ? String(each) : String(Number(each.toFixed(2)));
 }
 
 const MIN_RELATIVE_COST_DISPLAY = 0.01;
@@ -46,11 +54,33 @@ function formatRelativeNumber(value) {
     return Number.isInteger(rounded) ? String(rounded) : String(rounded);
 }
 
+function formatRelativeSpreadNumber(value) {
+    if (value == null || !Number.isFinite(value)) return '';
+    if (value === 0) return '0';
+    const rounded = Number(value.toFixed(2));
+    if (!Number.isFinite(rounded)) return '';
+    const absRounded = Math.abs(rounded);
+    if (absRounded > 0 && absRounded < MIN_RELATIVE_COST_DISPLAY) return '';
+    return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function formatFineRelativeNumber(value) {
+    const fine = Number(value.toFixed(6));
+    return Number.isFinite(fine) && fine > 0 ? String(fine) : '';
+}
+
 function formatRelativeUnitNumber(value) {
     if (value == null || !Number.isFinite(value) || value <= 0) return '';
-    if (value < MIN_RELATIVE_UNIT_DISPLAY) {
-        const fine = Number(value.toFixed(6));
-        return Number.isFinite(fine) && fine > 0 ? String(fine) : '';
+    if (value < MIN_RELATIVE_COST_DISPLAY) {
+        return formatFineRelativeNumber(value);
+    }
+    return formatRelativeNumber(value);
+}
+
+function formatRelativeValueNumber(value) {
+    if (value == null || !Number.isFinite(value) || value <= 0) return '';
+    if (value < MIN_RELATIVE_COST_DISPLAY) {
+        return formatFineRelativeNumber(value);
     }
     return formatRelativeNumber(value);
 }
@@ -67,7 +97,7 @@ function updateRelativeCostHint(marketContext) {
     const hint = document.getElementById('relativeCostBase');
     if (!hint) return;
     if (marketContext?.selectedBaseCurrencyName) {
-        hint.textContent = `Relative values shown in: ${marketContext.selectedBaseCurrencyName}`;
+        hint.textContent = `Relative cost & value shown in: ${marketContext.selectedBaseCurrencyName}`;
         hint.style.display = 'block';
     } else {
         hint.textContent = '';
@@ -370,17 +400,58 @@ function renderVendingMachines(machines) {
     });
     
     console.log(`Rendering ${allItems.length} items from ${totalShops} shops`);
+
+    // #region agent log
+    let bpWithValue = 0;
+    let bpDisplayBlank = 0;
+    const bpSample = [];
+    for (const item of allItems) {
+        const name = getItemName(item.itemId).toLowerCase();
+        if (!name.includes('blueprint')) continue;
+        if (bpSample.length < 3) {
+            bpSample.push({
+                itemQty: item.quantity,
+                costQty: item.costPerItem,
+                relativeValue: item.relativeValue,
+                relativeValueUnitPrice: item.relativeValueUnitPrice,
+                relativeCostUnitPrice: item.relativeCostUnitPrice,
+                costEachDisplay: formatCostEach(item.costPerItem, item.quantity)
+            });
+        }
+        if (item.relativeValue != null && Number.isFinite(item.relativeValue)) {
+            bpWithValue++;
+            const display = formatRelativeValueNumber(item.relativeValue);
+            if (!display) bpDisplayBlank++;
+        }
+    }
+    fetch('http://127.0.0.1:7369/ingest/44f44534-d7e5-450d-8927-d2fac007dc43', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a0a398' },
+        body: JSON.stringify({
+            sessionId: 'a0a398',
+            hypothesisId: 'H2',
+            location: 'renderer.js:renderVendingMachines',
+            message: 'blueprint relative display sample',
+            data: { bpWithValue, bpDisplayBlank, bpSample },
+            timestamp: Date.now(),
+            runId: 'post-fix-payment'
+        })
+    }).catch(() => {});
+    // #endregion
     
     // Create header
     const header = `
         <div class="list-header">
             <div class="sortable-header" data-sort="itemQty" onclick="handleColumnSort('itemQty')">Item Qty<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="item" onclick="handleColumnSort('item')">Item<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="relativeValue" onclick="handleColumnSort('relativeValue')">Relative Value<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="relativeValueEach" onclick="handleColumnSort('relativeValueEach')">Relative Value (Each)<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="costQty" onclick="handleColumnSort('costQty')">Cost Qty<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="costItem" onclick="handleColumnSort('costItem')">Cost Item<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="costEach" onclick="handleColumnSort('costEach')">Cost (Each)<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="relativeCost" onclick="handleColumnSort('relativeCost')">Relative Cost<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="relativeCostEach" onclick="handleColumnSort('relativeCostEach')">Relative Cost (Each)<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="relativeSpread" onclick="handleColumnSort('relativeSpread')">Relative Spread<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="stock" onclick="handleColumnSort('stock')">Stock<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="shop" onclick="handleColumnSort('shop')">Shop<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="location" onclick="handleColumnSort('location')">Location<span class="sort-indicator"></span></div>
@@ -402,10 +473,16 @@ function renderVendingMachines(machines) {
         const itemQty = item.quantity ?? 1;
         const costQty = item.costPerItem ?? 0;
         const costEach = getCostEach(costQty, itemQty);
+        const relativeValueDisplay = formatRelativeValueNumber(item.relativeValue);
+        const relativeValueEachDisplay = formatRelativeUnitNumber(item.relativeValueUnitPrice);
+        const relativeValueUnit = formatRelativeUnitNumber(item.relativeValueUnitPrice) || '';
+        const relativeValue = formatRelativeValueNumber(item.relativeValue) || '';
         const relativeCostDisplay = formatRelativeNumber(item.relativeCost);
         const relativeEachDisplay = formatRelativeUnitNumber(item.relativeCostUnitPrice);
         const relativeUnit = relativeUnitDatasetValue(item.relativeCostUnitPrice);
         const relativeCost = relativeCostDatasetValue(item.relativeCost);
+        const relativeSpreadDisplay = formatRelativeSpreadNumber(item.relativeSpread);
+        const relativeSpread = formatRelativeSpreadNumber(item.relativeSpread) || '';
         
         return `
             <div class="shop-row ${outOfStock ? 'out-of-stock' : ''}" 
@@ -420,11 +497,16 @@ function renderVendingMachines(machines) {
                  data-distance="${item.distance || Infinity}"
                  data-relative-unit="${relativeUnit}"
                  data-relative-cost="${relativeCost}"
+                 data-relative-value-unit="${relativeValueUnit}"
+                 data-relative-value="${relativeValue}"
+                 data-relative-spread="${relativeSpread}"
                  data-original-display="">
                 <div class="item-qty" data-label="Item Qty">${itemQty}</div>
                 <div class="sale" data-label="Item">
                     <span>${itemName}</span>
                 </div>
+                <div class="relative-value" data-label="Relative Value">${relativeValueDisplay}</div>
+                <div class="relative-value-each" data-label="Relative Value (Each)">${relativeValueEachDisplay}</div>
                 <div class="cost-qty" data-label="Cost Qty">${costQty}</div>
                 <div class="cost-item" data-label="Cost Item">
                     <span>${currencyName}</span>
@@ -432,6 +514,7 @@ function renderVendingMachines(machines) {
                 <div class="cost-each" data-label="Cost (Each)">${formatCostEach(costQty, itemQty)}</div>
                 <div class="relative-cost" data-label="Relative Cost">${relativeCostDisplay}</div>
                 <div class="relative-cost-each" data-label="Relative Cost (Each)">${relativeEachDisplay}</div>
+                <div class="relative-spread" data-label="Relative Spread">${relativeSpreadDisplay}</div>
                 <div class="stock" data-label="Stock">${stock}</div>
                 <div class="shop-name" data-label="Shop">${item.machineName}</div>
                 <div class="location" data-label="Location">${gridPos}</div>
@@ -475,7 +558,7 @@ function stateToSortBy({ column, direction }) {
 }
 
 function defaultSortDirection(column) {
-    if (column === 'stock' || column === 'quantity') return 'desc';
+    if (column === 'stock' || column === 'quantity' || column === 'relativeSpread') return 'desc';
     return 'asc';
 }
 
@@ -703,6 +786,48 @@ function compareShopRows(a, b, column, direction) {
             if (aMissing) return 1;
             if (bMissing) return -1;
             result = parseFloat(unitA) - parseFloat(unitB);
+            if (result === 0) {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
+            break;
+        }
+        case 'relativeValue': {
+            const valA = a.dataset.relativeValue;
+            const valB = b.dataset.relativeValue;
+            const aMissing = valA === '' || !Number.isFinite(parseFloat(valA));
+            const bMissing = valB === '' || !Number.isFinite(parseFloat(valB));
+            if (aMissing && bMissing) return 0;
+            if (aMissing) return 1;
+            if (bMissing) return -1;
+            result = parseFloat(valA) - parseFloat(valB);
+            if (result === 0) {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
+            break;
+        }
+        case 'relativeValueUnit': {
+            const unitA = a.dataset.relativeValueUnit;
+            const unitB = b.dataset.relativeValueUnit;
+            const aMissing = unitA === '' || !Number.isFinite(parseFloat(unitA));
+            const bMissing = unitB === '' || !Number.isFinite(parseFloat(unitB));
+            if (aMissing && bMissing) return 0;
+            if (aMissing) return 1;
+            if (bMissing) return -1;
+            result = parseFloat(unitA) - parseFloat(unitB);
+            if (result === 0) {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
+            break;
+        }
+        case 'relativeSpread': {
+            const spreadA = a.dataset.relativeSpread;
+            const spreadB = b.dataset.relativeSpread;
+            const aMissing = spreadA === '' || !Number.isFinite(parseFloat(spreadA));
+            const bMissing = spreadB === '' || !Number.isFinite(parseFloat(spreadB));
+            if (aMissing && bMissing) return 0;
+            if (aMissing) return 1;
+            if (bMissing) return -1;
+            result = parseFloat(spreadA) - parseFloat(spreadB);
             if (result === 0) {
                 result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
             }

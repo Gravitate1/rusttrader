@@ -663,7 +663,7 @@ body::before {
 /* Shop List Header */
 .list-header {
     display: grid;
-    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 70px 70px 90px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 70px 70px 1.2fr 70px 70px 70px 80px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 14px 20px;
     background: linear-gradient(135deg, rgba(206, 66, 43, 0.15) 0%, rgba(217, 118, 52, 0.15) 100%);
@@ -710,7 +710,7 @@ body::before {
 /* Shop Row */
 .shop-row {
     display: grid;
-    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 70px 70px 90px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 70px 70px 1.2fr 70px 70px 70px 80px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 12px 20px;
     border-bottom: 2px solid var(--border);
@@ -810,13 +810,20 @@ body::before {
     font-size: 0.9rem;
 }
 
+.relative-value,
+.relative-value-each,
 .relative-cost,
-.relative-cost-each {
+.relative-cost-each,
+.relative-spread {
     color: var(--text-secondary);
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.8rem;
     font-weight: 600;
     text-align: center;
+}
+
+.relative-spread:not(:empty) {
+    color: var(--success);
 }
 
 .relative-cost-hint {

@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node --test market-rates.test.js",
+    "test": "node --test market-rates.test.js market-rates-bulk-valuation.test.js",
     "postinstall": "patch-package"
   },
   "keywords": [

@@ -5,8 +5,12 @@
  * When confidence or connectivity is insufficient, relative cost is null — never guessed.
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const SCRAP_ITEM_ID_FALLBACK = -932201673;
 const HQM_ITEM_ID = 317398316;
+const DEBUG_LOG_PATH = path.join(__dirname, 'debug-a0a398.log');
 const MAX_PATH_DEPTH = 5;
 const MIN_SAMPLES = 2;
 const MIN_MACHINES = 2;
@@ -19,18 +23,22 @@ const MIN_RELATIVE_UNIT = 1e-6;
 
 // #region agent log
 function agentLog(hypothesisId, location, message, data, runId = 'pre-fix') {
+  const payload = {
+    sessionId: 'a0a398',
+    hypothesisId,
+    location,
+    message,
+    data,
+    timestamp: Date.now(),
+    runId
+  };
+  try {
+    fs.appendFileSync(DEBUG_LOG_PATH, `${JSON.stringify(payload)}\n`);
+  } catch (_) {}
   fetch('http://127.0.0.1:7369/ingest/44f44534-d7e5-450d-8927-d2fac007dc43', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '77abd7' },
-    body: JSON.stringify({
-      sessionId: '77abd7',
-      hypothesisId,
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-      runId
-    })
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a0a398' },
+    body: JSON.stringify(payload)
   }).catch(() => {});
 }
 // #endregion
@@ -75,6 +83,11 @@ function isValidRelativeCost(value) {
   return isValidNumber(value) && value >= MIN_RELATIVE_COST;
 }
 
+/** Stack totals can be well below 1 cent when unit value is tiny (e.g. blueprint fragments). */
+function isValidRelativeValueTotal(value) {
+  return isValidNumber(value) && value >= MIN_RELATIVE_UNIT;
+}
+
 function isValidRelativeUnit(value) {
   return isValidNumber(value) && value >= MIN_RELATIVE_UNIT;
 }
@@ -89,19 +102,106 @@ function isValidOffer(order) {
   return true;
 }
 
-/** Rust+ SellOrder: costPerItem is payment currency per one sold item; quantity is stack size. */
+/** Rust+ SellOrder: costPerItem is total payment for the listed stack (divide by item qty for per-unit). */
 function paymentPerItem(offer) {
   return offer.costPerItem;
 }
 
+function coefficientOfVariation(values) {
+  if (!values || values.length < 2) return Infinity;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  if (!Number.isFinite(mean) || mean === 0) return Infinity;
+  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / values.length;
+  return Math.sqrt(variance) / Math.abs(mean);
+}
+
 /**
- * Total payment for the listing — always costPerItem (same as UI Cost Qty).
- * Item qty only affects Cost (Each), not total payment.
+ * Detect whether costPerItem is per sold item or total payment for the listed stack.
+ * Stack-total: cost/qty is stable while headline cost varies (1250/1000 ≈ 625/500 scrap per MF).
+ * Bulk resources often use a small total in costPerItem (e.g. 20 scrap for 1000 wood).
  */
+function detectPricingModel(offers) {
+  if (!offers || offers.length < 2) return 'per-item';
+
+  const multiQty = offers.filter(o => isValidOffer(o) && o.quantity > 1);
+  if (multiQty.length >= 2) {
+    const unitRates = multiQty.map(o => o.costPerItem / o.quantity);
+    const costs = multiQty.map(o => o.costPerItem);
+    const unitCv = coefficientOfVariation(unitRates);
+    const costCv = coefficientOfVariation(costs);
+    const medUnit = median(unitRates);
+    const unitSpread =
+      isValidNumber(medUnit) && medUnit > 0
+        ? (Math.max(...unitRates) - Math.min(...unitRates)) / medUnit
+        : Infinity;
+    if ((unitCv < 0.25 || unitSpread < 0.15) && costCv > 0.25) return 'stack-total';
+  }
+
+  return 'per-item';
+}
+
+function buildItemCurrencyPricingModels(offers) {
+  const groups = new Map();
+  for (const offer of offers || []) {
+    if (!isValidOffer(offer)) continue;
+    const key = edgeKey(offer.itemId, offer.currencyId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(offer);
+  }
+  const models = new Map();
+  for (const [key, group] of groups) {
+    models.set(key, detectPricingModel(group));
+  }
+  return models;
+}
+
+function attachPricingModels(offers, models) {
+  const groups = new Map();
+  for (const offer of offers || []) {
+    if (!isValidOffer(offer)) continue;
+    const key = edgeKey(offer.itemId, offer.currencyId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(offer);
+  }
+  for (const [key, group] of groups) {
+    const model = models.get(key) ?? 'per-item';
+    for (const offer of group) {
+      offer._pricingModel = model;
+    }
+  }
+}
+
+function attachPricingModelsToMachines(machines, models) {
+  for (const machine of machines || []) {
+    for (const order of machine.sellOrders || []) {
+      if (!isValidOffer(order)) continue;
+      const itemId = normalizeItemId(order.itemId);
+      const currencyId = normalizeItemId(order.currencyId);
+      order._pricingModel = models.get(edgeKey(itemId, currencyId)) ?? 'per-item';
+    }
+  }
+}
+
+function getOfferPricingModel(offer) {
+  return offer?._pricingModel === 'stack-total' ? 'stack-total' : 'per-item';
+}
+
+/**
+ * Total payment (cost currency) and per sold-item unit rate for one listing.
+ * costPerItem is always the total for the stack; unit = costPerItem / item qty.
+ */
+function listingTotalAndUnit(offer) {
+  const total = paymentPerItem(offer);
+  const qty = soldStackSize(offer);
+  if (!Number.isFinite(total) || !Number.isFinite(qty) || qty <= 0) {
+    return { total: NaN, unit: NaN };
+  }
+  return { total, unit: total / qty };
+}
+
+/** Total payment currency for the full listing. */
 function totalPaymentForOffer(offer) {
-  const pay = paymentPerItem(offer);
-  if (!Number.isFinite(pay)) return NaN;
-  return pay;
+  return listingTotalAndUnit(offer).total;
 }
 
 /** @deprecated alias */
@@ -109,9 +209,64 @@ function totalPaymentInCurrency(offer) {
   return totalPaymentForOffer(offer);
 }
 
-/** Payment per sold item (matches UI Cost (Each) = costPerItem / item qty). */
+/** Scrap (or payment) per one sold item = costPerItem / item qty. */
+function scrapRatePerSoldItem(offer) {
+  return listingTotalAndUnit(offer).unit;
+}
+
+/**
+ * Scrap per one sold item from a listing paid in another currency.
+ * Uses total payment (costPerItem) × currency scrap rate, then ÷ item qty — same as relative cost / item qty.
+ */
+function scrapPerSoldItemFromPaymentListing(offer, currencyBaseValuePerUnit) {
+  const payTotal = paymentPerItem(offer);
+  const qty = soldStackSize(offer);
+  if (!isValidNumber(payTotal) || !isValidNumber(currencyBaseValuePerUnit) || !isValidNumber(qty) || qty <= 0) {
+    return NaN;
+  }
+  return (payTotal * currencyBaseValuePerUnit) / qty;
+}
+
+/** Items with at least one sell listing priced directly in the base currency. */
+function buildDirectScrapSoldItemIds(offers, baseId) {
+  const baseNorm = normalizeItemId(baseId);
+  const ids = new Set();
+  for (const offer of offers || []) {
+    if (!isValidOffer(offer)) continue;
+    if (normalizeItemId(offer.currencyId) !== baseNorm) continue;
+    ids.add(normalizeItemId(offer.itemId));
+  }
+  return ids;
+}
+
+/** @deprecated alias — use scrapRatePerSoldItem for value rates */
 function paymentPerSoldItemEach(offer) {
-  return paymentPerItem(offer) / offer.quantity;
+  return scrapRatePerSoldItem(offer);
+}
+
+/** Sold stack size (matches UI Item Qty). */
+function soldStackSize(offer) {
+  return offer.quantity;
+}
+
+/** Cost Qty column — payment in cost currency; relative cost never uses item qty. */
+function costQtyInCurrency(offer) {
+  return offer.costPerItem;
+}
+
+/** Relative Cost (Each) = Relative Cost ÷ Cost Qty (scrap per one cost-currency unit). */
+function relativeCostEachFromTotal(relativeCostTotal, offer) {
+  const costQty = costQtyInCurrency(offer);
+  if (!isValidRelativeCost(relativeCostTotal) || !isValidNumber(costQty) || costQty <= 0) {
+    return null;
+  }
+  const each = relativeCostTotal / costQty;
+  return isValidRelativeUnit(each) ? each : null;
+}
+
+/** Total sold-item value in base given per-unit base value (uses Item Qty). */
+function totalSoldValueInBase(offer, baseValuePerUnit) {
+  return offer.quantity * baseValuePerUnit;
 }
 
 function normalizeItemId(id) {
@@ -629,7 +784,6 @@ function refineSoldItemBaseValueFromBaseListings(offers, baseId, cache) {
     if (max > med * 3 && rates.length < 3) continue;
 
     const existing = cache.get(itemId);
-    if (existing?.viaSoldItems && isValidBaseValue(existing)) continue;
     if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
 
     cache.set(itemId, {
@@ -650,6 +804,7 @@ function refineSoldItemBaseValueFromBaseListings(offers, baseId, cache) {
  */
 function refinePaymentCurrencyCacheFromSoldItems(offers, baseId, cache, maxPasses = 3) {
   const baseNorm = normalizeItemId(baseId);
+  const directScrapSoldItems = buildDirectScrapSoldItemIds(offers, baseId);
 
   for (let pass = 0; pass < maxPasses; pass++) {
     const pending = new Map();
@@ -658,8 +813,12 @@ function refinePaymentCurrencyCacheFromSoldItems(offers, baseId, cache, maxPasse
       if (!isValidOffer(offer)) continue;
       const currencyId = normalizeItemId(offer.currencyId);
       if (currencyId === baseNorm) continue;
+      // Never infer HQM (etc.) from wood→HQM when that currency is also sold for scrap.
+      if (directScrapSoldItems.has(currencyId)) continue;
 
-      const existing = cache.get(currencyId);
+      const existing = cache.get(currencyId) ?? cache.get(normalizeItemId(currencyId));
+      if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
+      if (existing?.viaBuyOffers && isValidBaseValue(existing)) continue;
       if (existing?.viaSoldItems && isValidBaseValue(existing)) continue;
 
       const itemId = normalizeItemId(offer.itemId);
@@ -720,11 +879,13 @@ function refinePaymentCurrencyCacheFromSoldItems(offers, baseId, cache, maxPasse
 }
 
 /**
- * Value a currency/item from shops that sell it (ask price): e.g. CCTV for 500 sulfur ore.
+ * Value items from shop ask prices.
+ * Scrap-priced sold listings (via refineSoldItem) always win — never blend with cross-currency asks.
  */
 function refineCurrencyValueFromBuyOffers(offers, baseId, cache) {
   const baseNorm = normalizeItemId(baseId);
-  const pending = new Map();
+  const pendingScrap = new Map();
+  const pendingCrossAsk = new Map();
 
   for (const offer of offers || []) {
     if (!isValidOffer(offer)) continue;
@@ -734,22 +895,26 @@ function refineCurrencyValueFromBuyOffers(offers, baseId, cache) {
     if (payId === baseNorm) {
       const rate = paymentPerSoldItemEach(offer);
       if (!isValidNumber(rate)) continue;
-      if (!pending.has(itemId)) pending.set(itemId, []);
-      pending.get(itemId).push(rate);
+      if (!pendingScrap.has(itemId)) pendingScrap.set(itemId, []);
+      pendingScrap.get(itemId).push(rate);
       continue;
     }
 
-    const payResolved = cache.get(payId);
+    const payResolved =
+      cache.get(payId) ?? cache.get(normalizeItemId(payId)) ?? null;
     if (!isValidBaseValue(payResolved)) continue;
 
-    const rate = paymentPerSoldItemEach(offer) * payResolved.baseValue;
+    const rate = scrapPerSoldItemFromPaymentListing(offer, payResolved.baseValue);
     if (!isValidNumber(rate)) continue;
-    if (!pending.has(itemId)) pending.set(itemId, []);
-    pending.get(itemId).push(rate);
+    if (!pendingCrossAsk.has(itemId)) pendingCrossAsk.set(itemId, []);
+    pendingCrossAsk.get(itemId).push(rate);
   }
 
-  for (const [itemId, rates] of pending) {
+  for (const [itemId, rates] of pendingScrap) {
     if (rates.length < MIN_SAMPLES_LOOSE) continue;
+
+    const existing = cache.get(itemId) ?? cache.get(normalizeItemId(itemId));
+    if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
 
     const min = Math.min(...rates);
     const max = Math.max(...rates);
@@ -763,6 +928,28 @@ function refineCurrencyValueFromBuyOffers(offers, baseId, cache) {
       confidence: rates.length >= 4 ? 'high' : 'medium',
       sampleCount: rates.length,
       viaBuyOffers: true
+    });
+  }
+
+  for (const [itemId, rates] of pendingCrossAsk) {
+    if (rates.length < MIN_SAMPLES_LOOSE) continue;
+
+    const existing = cache.get(itemId) ?? cache.get(normalizeItemId(itemId));
+    if (isValidBaseValue(existing)) continue;
+
+    const min = Math.min(...rates);
+    const max = Math.max(...rates);
+    const med = median(rates);
+    if (!isValidNumber(med)) continue;
+    if (max > med * 3 && rates.length < 3) continue;
+
+    cache.set(itemId, {
+      baseValue: med,
+      pathDepth: 1,
+      confidence: rates.length >= 4 ? 'high' : 'medium',
+      sampleCount: rates.length,
+      viaBuyOffers: true,
+      viaBuyOffersCross: true
     });
   }
 
@@ -802,12 +989,65 @@ function refinePaymentCurrencyFromItemMedians(offers, baseId, cache, itemPayment
     if (!isValidNumber(med)) continue;
     if (max > med * 3 && rates.length < 3) continue;
 
+    const existing = cache.get(currencyId) ?? cache.get(normalizeItemId(currencyId));
+    if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
+    if (existing?.viaBuyOffers && isValidBaseValue(existing)) continue;
+
     cache.set(currencyId, {
       baseValue: med,
       pathDepth: 1,
       confidence: rates.length >= 4 ? 'high' : 'medium',
       sampleCount: rates.length,
       viaItemMedians: true
+    });
+  }
+
+  return cache;
+}
+
+/**
+ * Median scrap-per-sold-item from sell listings (total cost converted to scrap ÷ item qty).
+ * Matches relative cost total ÷ item qty, not relative cost (each) ÷ item qty.
+ */
+function refineItemValueFromPaymentListings(offers, baseId, cache) {
+  const baseNorm = normalizeItemId(baseId);
+  const pending = new Map();
+
+  for (const offer of offers || []) {
+    if (!isValidOffer(offer)) continue;
+    const currencyId = normalizeItemId(offer.currencyId);
+    if (currencyId === baseNorm) continue;
+
+    const payResolved =
+      cache.get(currencyId) ?? cache.get(normalizeItemId(currencyId)) ?? null;
+    if (!isValidBaseValue(payResolved)) continue;
+
+    const unitInBase = scrapPerSoldItemFromPaymentListing(offer, payResolved.baseValue);
+    if (!isValidNumber(unitInBase)) continue;
+
+    const itemId = normalizeItemId(offer.itemId);
+    if (!pending.has(itemId)) pending.set(itemId, []);
+    pending.get(itemId).push(unitInBase);
+  }
+
+  for (const [itemId, rates] of pending) {
+    if (rates.length < MIN_SAMPLES_LOOSE) continue;
+
+    const min = Math.min(...rates);
+    const max = Math.max(...rates);
+    const med = median(rates);
+    if (!isValidNumber(med)) continue;
+    if (max > med * 3 && rates.length < 3) continue;
+
+    const existing = cache.get(itemId) ?? cache.get(normalizeItemId(itemId));
+    if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
+
+    cache.set(itemId, {
+      baseValue: med,
+      pathDepth: 1,
+      confidence: rates.length >= 4 ? 'high' : 'medium',
+      sampleCount: rates.length,
+      viaPaymentListings: true
     });
   }
 
@@ -821,6 +1061,7 @@ function runCurrencyRefinementPasses(offers, baseId, cache, itemPaymentMedians, 
     refineCurrencyValueFromBuyOffers(offers, baseId, cache);
     refinePaymentCurrencyFromItemMedians(offers, baseId, cache, itemPaymentMedians);
   }
+  refineItemValueFromPaymentListings(offers, baseId, cache);
   return cache;
 }
 
@@ -856,6 +1097,156 @@ function buildItemMedianPaymentPerItem(offers) {
   return result;
 }
 
+/**
+ * Median implied base per unit when an item is used as payment (other items sold for it).
+ */
+function buildPaymentCurrencyImpliedBaseMedians(offers, baseId, cache) {
+  const baseNorm = normalizeItemId(baseId);
+  const pending = new Map();
+
+  for (const offer of offers || []) {
+    if (!isValidOffer(offer)) continue;
+    const currencyId = normalizeItemId(offer.currencyId);
+    if (currencyId === baseNorm) continue;
+
+    const itemId = normalizeItemId(offer.itemId);
+    const itemResolved = cache.get(itemId) ?? cache.get(normalizeItemId(itemId)) ?? null;
+    if (!isValidBaseValue(itemResolved)) continue;
+
+    const totalPay = totalPaymentForOffer(offer);
+    if (!isValidNumber(totalPay)) continue;
+
+    const impliedPerUnit = (itemResolved.baseValue * offer.quantity) / totalPay;
+    if (!isValidNumber(impliedPerUnit)) continue;
+
+    if (!pending.has(currencyId)) pending.set(currencyId, []);
+    pending.get(currencyId).push(impliedPerUnit);
+  }
+
+  const result = new Map();
+  for (const [currencyId, rates] of pending) {
+    if (rates.length < MIN_SAMPLES_LOOSE) continue;
+    const min = Math.min(...rates);
+    const max = Math.max(...rates);
+    const med = median(rates);
+    if (!isValidNumber(med)) continue;
+    if (max > med * 3 && rates.length < 3) continue;
+    result.set(currencyId, med);
+  }
+  return result;
+}
+
+/** Push payment-role medians into cache when sold-item paths did not resolve. */
+function applyPaymentRoleMediansToCache(cache, paymentRoleMedians) {
+  for (const [currencyId, med] of paymentRoleMedians) {
+    const existing = cache.get(currencyId) ?? cache.get(normalizeItemId(currencyId));
+    if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
+    if (isValidBaseValue(existing)) continue;
+    cache.set(currencyId, {
+      baseValue: med,
+      pathDepth: 1,
+      confidence: 'medium',
+      sampleCount: MIN_SAMPLES_LOOSE,
+      viaPaymentRole: true
+    });
+  }
+  return cache;
+}
+
+/** Let item-cross use base median for items that only appear as payment currency. */
+function mergePaymentRoleIntoItemMedians(itemPaymentMedians, paymentRoleMedians, baseId) {
+  const baseNorm = normalizeItemId(baseId);
+  for (const [itemId, med] of paymentRoleMedians) {
+    let curMap = itemPaymentMedians.get(itemId);
+    if (!curMap) {
+      curMap = new Map();
+      itemPaymentMedians.set(itemId, curMap);
+    }
+    if (!curMap.has(baseNorm)) {
+      curMap.set(baseNorm, med);
+    }
+  }
+  return itemPaymentMedians;
+}
+
+/** Value from same-item sold listings: cross payment currency vs base (mirrors cost item-cross). */
+function tryItemCrossRateRelativeValue(order, baseId, itemPaymentMedians) {
+  const baseNorm = normalizeItemId(baseId);
+  const itemId = normalizeItemId(order.itemId);
+  const currencyId = normalizeItemId(order.currencyId);
+  if (itemId === baseNorm) return null;
+
+  const curMap = itemPaymentMedians.get(itemId);
+  if (!curMap) return null;
+
+  const baseMed = curMap.get(baseNorm);
+  if (!isValidNumber(baseMed)) return null;
+
+  const qty = soldStackSize(order);
+  if (!isValidNumber(qty)) return null;
+
+  let unitInBase;
+  if (currencyId === baseNorm) {
+    unitInBase = baseMed;
+  } else {
+    const payMed = curMap.get(currencyId);
+    if (!isValidNumber(payMed)) return null;
+    unitInBase = baseMed / payMed;
+  }
+
+  const totalInBase = qty * unitInBase;
+  if (!isValidRelativeValueTotal(totalInBase)) return null;
+
+  return {
+    relativeValue: totalInBase,
+    relativeValueUnitPrice: isValidRelativeUnit(unitInBase) ? unitInBase : null,
+    marketRateSource: 'item-cross-value'
+  };
+}
+
+/** Value when item only appears as payment currency in other listings. */
+function tryPaymentRoleMedianRelativeValue(order, paymentRoleMedians) {
+  const itemId = normalizeItemId(order.itemId);
+  const med = paymentRoleMedians.get(itemId) ?? paymentRoleMedians.get(normalizeItemId(itemId));
+  if (!isValidNumber(med)) return null;
+
+  const qty = soldStackSize(order);
+  if (!isValidNumber(qty)) return null;
+
+  const totalInBase = totalSoldValueInBase(order, med);
+  if (!isValidRelativeValueTotal(totalInBase)) return null;
+
+  return {
+    relativeValue: totalInBase,
+    relativeValueUnitPrice: isValidRelativeUnit(med) ? med : null,
+    marketRateSource: 'payment-role-median'
+  };
+}
+
+function tryCurrencyDerivedRelativeValue(order, baseId, baseValueCache) {
+  const baseNorm = normalizeItemId(baseId);
+  const itemId = normalizeItemId(order.itemId);
+  const currencyId = normalizeItemId(order.currencyId);
+  if (itemId === baseNorm || currencyId === baseNorm) return null;
+
+  const resolved =
+    baseValueCache.get(currencyId) ?? baseValueCache.get(normalizeItemId(currencyId)) ?? null;
+  if (!isValidBaseValue(resolved)) return null;
+
+  const payEach = paymentPerSoldItemEach(order);
+  const qty = soldStackSize(order);
+  if (!isValidNumber(payEach) || !isValidNumber(qty)) return null;
+
+  const unitInBase = payEach * resolved.baseValue;
+  const totalInBase = qty * unitInBase;
+  if (!isValidRelativeValueTotal(totalInBase)) return null;
+
+  return {
+    relativeValue: totalInBase,
+    relativeValueUnitPrice: isValidRelativeUnit(unitInBase) ? unitInBase : null
+  };
+}
+
 function tryItemCrossRateRelativeCost(order, baseId, itemPaymentMedians) {
   const baseNorm = normalizeItemId(baseId);
   const itemId = normalizeItemId(order.itemId);
@@ -869,17 +1260,16 @@ function tryItemCrossRateRelativeCost(order, baseId, itemPaymentMedians) {
   const payMed = curMap.get(currencyId);
   if (!isValidNumber(baseMed) || !isValidNumber(payMed)) return null;
 
-  const payPerItem = paymentPerItem(order);
-  if (!isValidNumber(payPerItem)) return null;
+  const costQty = costQtyInCurrency(order);
+  if (!isValidNumber(costQty)) return null;
 
   const ratio = baseMed / payMed;
-  const totalInBase = totalPaymentForOffer(order) * ratio;
-  const eachInBase = paymentPerSoldItemEach(order) * ratio;
-  if (!isValidRelativeCost(totalInBase)) return null;
+  const inBase = costQty * ratio;
+  if (!isValidRelativeCost(inBase)) return null;
 
   return {
-    relativeCost: totalInBase,
-    relativeCostUnitPrice: isValidRelativeUnit(eachInBase) ? eachInBase : null,
+    relativeCost: inBase,
+    relativeCostUnitPrice: relativeCostEachFromTotal(inBase, order),
     marketRateSource: 'item-cross',
     pathDepth: 1,
     confidence: 'medium',
@@ -893,6 +1283,7 @@ function applyImpliedPaymentCurrencyRates(cache, impliedEdges, baseId) {
     if (normalizeItemId(edge.currencyId) !== baseNorm) continue;
     const currencyId = normalizeItemId(edge.soldId);
     const existing = cache.get(currencyId);
+    if (existing?.viaDirectListing && isValidBaseValue(existing)) continue;
     if (existing?.viaBuyOffers && isValidBaseValue(existing)) continue;
     if (existing?.viaItemMedians && isValidBaseValue(existing)) continue;
     if (existing?.viaSoldItems && isValidBaseValue(existing)) continue;
@@ -907,12 +1298,23 @@ function applyImpliedPaymentCurrencyRates(cache, impliedEdges, baseId) {
   }
 }
 
-function enrichSingleOffer(order, baseId, baseName, baseValueCache, itemPaymentMedians = new Map()) {
-  const enriched = { ...order };
+function enrichSingleOffer(
+  order,
+  baseId,
+  baseName,
+  baseValueCache,
+  itemPaymentMedians = new Map(),
+  paymentRoleMedians = new Map()
+) {
+  const enriched = { ...order, _pricingModel: getOfferPricingModel(order) };
   const nullFields = () => {
     enriched.relativeCost = null;
     enriched.relativeCostUnitPrice = null;
     enriched.relativeCostCurrency = null;
+    enriched.relativeValue = null;
+    enriched.relativeValueUnitPrice = null;
+    enriched.relativeValueCurrency = null;
+    enriched.relativeSpread = null;
     enriched.marketRateSource = null;
     enriched.pathDepth = null;
     enriched.marketRateSampleCount = null;
@@ -922,76 +1324,176 @@ function enrichSingleOffer(order, baseId, baseName, baseValueCache, itemPaymentM
 
   if (!isValidOffer(order)) return nullFields();
 
+  const baseNorm = normalizeItemId(baseId);
   const currencyId = normalizeItemId(order.currencyId);
+  const itemId = normalizeItemId(order.itemId);
   const quantity = order.quantity;
   enriched.relativeCostCurrency = baseName;
+  enriched.relativeValueCurrency = baseName;
 
-  if (currencyId === normalizeItemId(baseId)) {
-    const relativeCost = totalPaymentForOffer(order);
-    const relativeCostUnitPrice = paymentPerSoldItemEach(order);
-    if (!isValidRelativeCost(relativeCost)) {
-      return nullFields();
+  let relativeCost = null;
+  let relativeCostUnitPrice = null;
+  let marketRateSource = null;
+  let pathDepth = null;
+  let marketRateSampleCount = null;
+  let marketRateConfidence = null;
+
+  if (currencyId === baseNorm) {
+    const costInBase = costQtyInCurrency(order);
+    if (isValidRelativeCost(costInBase)) {
+      relativeCost = costInBase;
+      relativeCostUnitPrice = relativeCostEachFromTotal(costInBase, order);
+      marketRateSource = 'base-direct';
+      pathDepth = 0;
     }
-    enriched.relativeCost = relativeCost;
-    enriched.relativeCostUnitPrice = isValidRelativeUnit(relativeCostUnitPrice)
-      ? relativeCostUnitPrice
-      : null;
-    enriched.marketRateSource = 'base-direct';
-    enriched.pathDepth = 0;
-    enriched.marketRateSampleCount = null;
-    enriched.marketRateConfidence = null;
-    return enriched;
+  } else {
+    const payResolved =
+      baseValueCache.get(currencyId) ?? baseValueCache.get(normalizeItemId(currencyId)) ?? null;
+    if (isValidBaseValue(payResolved)) {
+      const costInBase = costQtyInCurrency(order) * payResolved.baseValue;
+      if (isValidRelativeCost(costInBase)) {
+        relativeCost = costInBase;
+        relativeCostUnitPrice = relativeCostEachFromTotal(costInBase, order);
+        marketRateSource = 'derived';
+        pathDepth = payResolved.pathDepth;
+        marketRateSampleCount = payResolved.sampleCount;
+        marketRateConfidence = payResolved.confidence;
+        // #region agent log
+        if (itemId === -1899491405 || normalizeItemId(order.itemId) === 69511070) {
+          agentLog(
+            'COST',
+            'market-rates.js:enrichSingleOffer',
+            'relative cost / each from cost qty',
+            {
+              itemId: order.itemId,
+              itemQty: quantity,
+              costQty: order.costPerItem,
+              costItemId: order.currencyId,
+              relativeCost: costInBase,
+              relativeCostUnitPrice: relativeCostUnitPrice
+            },
+            'cost-each-divide'
+          );
+        }
+        // #endregion
+      }
+    } else {
+      const costCross = tryItemCrossRateRelativeCost(order, baseId, itemPaymentMedians);
+      if (costCross) {
+        relativeCost = costCross.relativeCost;
+        relativeCostUnitPrice = costCross.relativeCostUnitPrice;
+        marketRateSource = costCross.marketRateSource;
+        pathDepth = costCross.pathDepth;
+        marketRateSampleCount = costCross.sampleCount;
+        marketRateConfidence = costCross.confidence;
+      }
+    }
   }
 
-  const resolved =
-    baseValueCache.get(currencyId) ?? baseValueCache.get(normalizeItemId(currencyId)) ?? null;
-  if (isValidBaseValue(resolved)) {
-    const relativeCost = totalPaymentForOffer(order) * resolved.baseValue;
-    const relativeCostUnitPrice = paymentPerSoldItemEach(order) * resolved.baseValue;
-    // #region agent log
-    if (normalizeItemId(order.itemId) === -1899491405 && quantity === 2) {
-      agentLog(
-        'K',
-        'market-rates.js:enrichSingleOffer',
-        'bp qty2 relative cost',
-        {
-          costPerItem: order.costPerItem,
-          quantity,
-          totalPayment: totalPaymentForOffer(order),
-          baseValue: resolved.baseValue,
-          relativeCost,
-          relativeCostUnitPrice
-        },
-        'post-fix-v13'
-      );
+  let relativeValue = null;
+  let relativeValueUnitPrice = null;
+
+  if (itemId === baseNorm) {
+    const value = soldStackSize(order);
+    if (isValidRelativeValueTotal(value)) {
+      relativeValue = value;
+      relativeValueUnitPrice = 1;
     }
-    // #endregion
-    if (!isValidRelativeCost(relativeCost)) {
-      return nullFields();
+  } else if (currencyId === baseNorm) {
+    const { total, unit } = listingTotalAndUnit(order);
+    if (isValidRelativeValueTotal(total) && isValidRelativeUnit(unit)) {
+      relativeValue = total;
+      relativeValueUnitPrice = unit;
+      enriched._valueCacheSource = 'listing-scrap-total';
     }
-    enriched.relativeCost = relativeCost;
-    enriched.relativeCostUnitPrice = isValidRelativeUnit(relativeCostUnitPrice)
-      ? relativeCostUnitPrice
-      : null;
-    enriched.marketRateSource = 'derived';
-    enriched.pathDepth = resolved.pathDepth;
-    enriched.marketRateSampleCount = resolved.sampleCount;
-    enriched.marketRateConfidence = resolved.confidence;
-    return enriched;
+  } else {
+    const itemResolved =
+      baseValueCache.get(itemId) ?? baseValueCache.get(normalizeItemId(itemId)) ?? null;
+    if (isValidBaseValue(itemResolved)) {
+      const valueEach = itemResolved.baseValue;
+      const value = totalSoldValueInBase(order, valueEach);
+      if (isValidRelativeValueTotal(value) && isValidRelativeUnit(valueEach)) {
+        relativeValue = value;
+        relativeValueUnitPrice = valueEach;
+        enriched._valueCacheSource = itemResolved.viaDirectListing
+          ? 'direct-scrap'
+          : itemResolved.viaBuyOffers
+            ? itemResolved.viaBuyOffersCross
+              ? 'buy-offers-cross'
+              : 'buy-offers-scrap'
+            : itemResolved.viaPaymentListings
+              ? 'payment-listings-median'
+              : itemResolved.viaPaymentRole
+                ? 'payment-role'
+                : itemResolved.viaSoldItems
+                  ? 'sold-items'
+                  : itemResolved.viaItemMedians
+                    ? 'item-medians'
+                    : itemResolved.viaImplied
+                      ? 'implied'
+                      : 'cache';
+      }
+    } else {
+      const valueCross = tryItemCrossRateRelativeValue(order, baseId, itemPaymentMedians);
+      if (valueCross) {
+        relativeValue = valueCross.relativeValue;
+        relativeValueUnitPrice = valueCross.relativeValueUnitPrice;
+      } else {
+        const valuePaymentRole = tryPaymentRoleMedianRelativeValue(order, paymentRoleMedians);
+        if (valuePaymentRole) {
+          relativeValue = valuePaymentRole.relativeValue;
+          relativeValueUnitPrice = valuePaymentRole.relativeValueUnitPrice;
+        } else {
+          const valueDerived = tryCurrencyDerivedRelativeValue(order, baseId, baseValueCache);
+          if (valueDerived) {
+            relativeValue = valueDerived.relativeValue;
+            relativeValueUnitPrice = valueDerived.relativeValueUnitPrice;
+          }
+        }
+      }
+    }
   }
 
-  const cross = tryItemCrossRateRelativeCost(order, baseId, itemPaymentMedians);
-  if (cross) {
-    enriched.relativeCost = cross.relativeCost;
-    enriched.relativeCostUnitPrice = cross.relativeCostUnitPrice;
-    enriched.marketRateSource = cross.marketRateSource;
-    enriched.pathDepth = cross.pathDepth;
-    enriched.marketRateSampleCount = cross.sampleCount;
-    enriched.marketRateConfidence = cross.confidence;
-    return enriched;
+  enriched.relativeCost = relativeCost;
+  enriched.relativeCostUnitPrice = relativeCostUnitPrice;
+  enriched.relativeValue = relativeValue;
+  enriched.relativeValueUnitPrice = relativeValueUnitPrice;
+
+  // #region agent log
+  const RIFLE_AMMO_ID = -1211166256;
+  if (normalizeItemId(order.itemId) === RIFLE_AMMO_ID && (relativeValue != null || relativeCost != null)) {
+    agentLog(
+      'AMMO',
+      'market-rates.js:enrichSingleOffer',
+      '5.56 ammo value/cost',
+      {
+        itemQty: quantity,
+        costQty: order.costPerItem,
+        costItemId: order.currencyId,
+        relativeCost,
+        relativeCostUnitPrice,
+        relativeValue,
+        relativeValueUnitPrice,
+        valueCacheSource: enriched._valueCacheSource ?? null,
+        marketRateSource
+      },
+      'ammo-payment-median'
+    );
+  }
+  // #endregion
+
+  enriched.marketRateSource = marketRateSource;
+  enriched.pathDepth = pathDepth;
+  enriched.marketRateSampleCount = marketRateSampleCount;
+  enriched.marketRateConfidence = marketRateConfidence;
+
+  if (isValidRelativeValueTotal(relativeValue) && isValidRelativeCost(relativeCost)) {
+    enriched.relativeSpread = relativeValue - relativeCost;
+  } else {
+    enriched.relativeSpread = null;
   }
 
-  return nullFields();
+  return enriched;
 }
 
 /**
@@ -999,6 +1501,9 @@ function enrichSingleOffer(order, baseId, baseName, baseValueCache, itemPaymentM
  */
 function enrichOffersWithRelativeCost(machines, itemNames) {
   const flat = flattenOffers(machines);
+  const pricingModels = buildItemCurrencyPricingModels(flat);
+  attachPricingModels(flat, pricingModels);
+  attachPricingModelsToMachines(machines, pricingModels);
   const scrapItemId = resolveScrapItemId(itemNames);
   const baseSelection = selectBaseCurrency(flat, scrapItemId);
   const baseId = baseSelection.itemId;
@@ -1019,6 +1524,9 @@ function enrichOffersWithRelativeCost(machines, itemNames) {
   let baseValueCache = buildBaseValueCache(flat, baseId, edges);
   const itemPaymentMedians = buildItemMedianPaymentPerItem(flat);
   runCurrencyRefinementPasses(flat, baseId, baseValueCache, itemPaymentMedians);
+  const paymentRoleMedians = buildPaymentCurrencyImpliedBaseMedians(flat, baseId, baseValueCache);
+  applyPaymentRoleMediansToCache(baseValueCache, paymentRoleMedians);
+  mergePaymentRoleIntoItemMedians(itemPaymentMedians, paymentRoleMedians, baseId);
   const allImplied = mergeEdgeMaps(
     impliedFromOffers,
     mergeEdgeMaps(impliedFromForward, impliedFromLoose)
@@ -1026,6 +1534,7 @@ function enrichOffersWithRelativeCost(machines, itemNames) {
   applyImpliedPaymentCurrencyRates(baseValueCache, allImplied, baseId);
 
   const METAL_FRAGMENTS_ID = 69511070;
+  const WOOD_ID = -1461508848;
 
   function cacheSummary(cache, id) {
     const e = cache.get(id);
@@ -1074,6 +1583,75 @@ function enrichOffersWithRelativeCost(machines, itemNames) {
     mfBridgeRates.push({ itemId, rate: itemVal.baseValue / payPerItem, viaSoldItems: !!itemVal.viaSoldItems });
   }
 
+  // #region agent log
+  const woodScrapSamples = flat
+    .filter(
+      o =>
+        isValidOffer(o) &&
+        normalizeItemId(o.itemId) === WOOD_ID &&
+        normalizeItemId(o.currencyId) === baseId
+    )
+    .slice(0, 4)
+    .map(o => ({
+      costPerItem: o.costPerItem,
+      quantity: o.quantity,
+      pricingModel: o._pricingModel,
+      ratePerSoldItem: scrapRatePerSoldItem(o),
+      rawCostPerItem: o.costPerItem
+    }));
+  const hqmScrapSamples = flat
+    .filter(
+      o =>
+        isValidOffer(o) &&
+        normalizeItemId(o.itemId) === HQM_ITEM_ID &&
+        normalizeItemId(o.currencyId) === baseId
+    )
+    .slice(0, 4)
+    .map(o => ({
+      costPerItem: o.costPerItem,
+      quantity: o.quantity,
+      pricingModel: o._pricingModel,
+      ratePerSoldItem: scrapRatePerSoldItem(o),
+      rawCostPerItem: o.costPerItem
+    }));
+  const woodMed = itemPaymentMedians.get(WOOD_ID)?.get(baseId);
+  const hqmMed = itemPaymentMedians.get(HQM_ITEM_ID)?.get(baseId);
+  agentLog('VAL', 'market-rates.js:enrichOffers', 'wood/hqm value cache', {
+    baseId,
+    woodCache: cacheSummary(baseValueCache, WOOD_ID),
+    hqmCache: cacheSummary(baseValueCache, HQM_ITEM_ID),
+    woodItemMedianScrap: woodMed ?? null,
+    hqmItemMedianScrap: hqmMed ?? null,
+    woodScrapPricing: pricingModels.get(edgeKey(WOOD_ID, baseId)) ?? 'per-item',
+    hqmScrapPricing: pricingModels.get(edgeKey(HQM_ITEM_ID, baseId)) ?? 'per-item',
+    woodScrapSamples,
+    hqmScrapSamples
+  }, 'qty-valuation-v2');
+  // #endregion
+
+  const mfScrapPricing = pricingModels.get(edgeKey(METAL_FRAGMENTS_ID, baseId)) ?? 'per-item';
+  const mfScrapSamples = flat
+    .filter(
+      o =>
+        isValidOffer(o) &&
+        normalizeItemId(o.itemId) === METAL_FRAGMENTS_ID &&
+        normalizeItemId(o.currencyId) === baseId
+    )
+    .slice(0, 5)
+    .map(o => ({
+      costPerItem: o.costPerItem,
+      quantity: o.quantity,
+      pricingModel: o._pricingModel,
+      paymentEach: paymentPerSoldItemEach(o),
+      totalPayment: totalPaymentForOffer(o)
+    }));
+
+  agentLog('H3', 'market-rates.js:enrichOffers', 'MF scrap pricing model', {
+    mfScrapPricing,
+    mfScrapSamples,
+    mfCacheBaseValue: mfCache?.baseValue ?? null
+  }, 'post-fix-stack-total');
+
   agentLog('F', 'market-rates.js:enrichOffers', 'metal fragments bridge', {
     mfPaymentOffers,
     uniqueItemsSoldForMf: itemsSoldForMf.size,
@@ -1100,17 +1678,59 @@ function enrichOffersWithRelativeCost(machines, itemNames) {
   const enrichedMachines = (machines || []).map(machine => ({
     ...machine,
     sellOrders: (machine.sellOrders || []).map(order =>
-      enrichSingleOffer(order, baseId, baseName, baseValueCache, itemPaymentMedians)
+      enrichSingleOffer(order, baseId, baseName, baseValueCache, itemPaymentMedians, paymentRoleMedians)
     )
   }));
 
   // #region agent log
+  const woodEnriched = enrichedMachines
+    .flatMap(m => m.sellOrders || [])
+    .filter(o => normalizeItemId(o.itemId) === WOOD_ID)
+    .slice(0, 3)
+    .map(o => ({
+      costPerItem: o.costPerItem,
+      itemQty: o.quantity,
+      ratePerSoldItem: scrapRatePerSoldItem(o),
+      relativeValueUnitPrice: o.relativeValueUnitPrice,
+      valueCacheSource: o._valueCacheSource
+    }));
+  const hqmEnriched = enrichedMachines
+    .flatMap(m => m.sellOrders || [])
+    .filter(o => normalizeItemId(o.itemId) === HQM_ITEM_ID)
+    .slice(0, 3)
+    .map(o => ({
+      costPerItem: o.costPerItem,
+      itemQty: o.quantity,
+      ratePerSoldItem: scrapRatePerSoldItem(o),
+      relativeValueUnitPrice: o.relativeValueUnitPrice,
+      valueCacheSource: o._valueCacheSource
+    }));
+  agentLog('VAL2', 'market-rates.js:enrichOffers', 'wood/hqm enriched rows', {
+    woodEnriched,
+    hqmEnriched
+  }, 'qty-valuation-v2');
+
+  const mfEnrichedSamples = [];
   let mfBlank = 0;
   let mfDerived = 0;
   let mfSubCent = 0;
   let mfZero = 0;
   for (const machine of enrichedMachines) {
     for (const order of machine.sellOrders || []) {
+      if (
+        normalizeItemId(order.itemId) === METAL_FRAGMENTS_ID &&
+        mfEnrichedSamples.length < 4
+      ) {
+        mfEnrichedSamples.push({
+          costPerItem: order.costPerItem,
+          quantity: order.quantity,
+          pricingModel: order._pricingModel,
+          relativeValue: order.relativeValue,
+          relativeValueUnitPrice: order.relativeValueUnitPrice,
+          relativeCost: order.relativeCost,
+          relativeCostUnitPrice: order.relativeCostUnitPrice
+        });
+      }
       if (normalizeItemId(order.currencyId) !== METAL_FRAGMENTS_ID) continue;
       if (order.marketRateSource === 'derived') mfDerived++;
       if (order.relativeCost == null) mfBlank++;
@@ -1148,6 +1768,30 @@ function enrichOffersWithRelativeCost(machines, itemNames) {
       }
     }
   }
+  const woodHqmValueSamples = [];
+  for (const machine of enrichedMachines) {
+    for (const order of machine.sellOrders || []) {
+      const id = normalizeItemId(order.itemId);
+      if (id !== WOOD_ID && id !== HQM_ITEM_ID) continue;
+      if (woodHqmValueSamples.length < 6) {
+        woodHqmValueSamples.push({
+          itemId: id,
+          itemQty: order.quantity,
+          costQty: order.costPerItem,
+          relativeValueUnitPrice: order.relativeValueUnitPrice,
+          valueCacheSource: order._valueCacheSource ?? null
+        });
+      }
+    }
+  }
+  agentLog('VAL2', 'market-rates.js:enrichOffers', 'wood/hqm enriched value', {
+    woodHqmValueSamples
+  }, 'fix-buy-offers-priority');
+
+  agentLog('H4', 'market-rates.js:enrichOffers', 'MF enriched relative fields', {
+    mfEnrichedSamples
+  }, 'post-fix-stack-total');
+
   agentLog('H', 'market-rates.js:enrichOffers', 'commodity relative cost', {
     commodityDerived,
     commodityNullSamples,
@@ -1316,18 +1960,28 @@ function enrichOffersWithRelativeCost(machines, itemNames) {
 /**
  * Compare relative unit costs for DOM row sorting. Unavailable always sorts last.
  */
-function compareRelativeCostUnit(aUnit, bUnit, direction) {
-  const aMissing = aUnit === '' || aUnit == null || !Number.isFinite(parseFloat(aUnit));
-  const bMissing = bUnit === '' || bUnit == null || !Number.isFinite(parseFloat(bUnit));
+function compareRelativeNumeric(aVal, bVal, direction) {
+  const aMissing = aVal === '' || aVal == null || !Number.isFinite(parseFloat(aVal));
+  const bMissing = bVal === '' || bVal == null || !Number.isFinite(parseFloat(bVal));
 
   if (aMissing && bMissing) return 0;
   if (aMissing) return 1;
   if (bMissing) return -1;
 
-  const aVal = parseFloat(aUnit);
-  const bVal = parseFloat(bUnit);
-  const result = aVal - bVal;
+  const result = parseFloat(aVal) - parseFloat(bVal);
   return direction === 'asc' ? result : -result;
+}
+
+function compareRelativeCostUnit(aUnit, bUnit, direction) {
+  return compareRelativeNumeric(aUnit, bUnit, direction);
+}
+
+function compareRelativeValueUnit(aUnit, bUnit, direction) {
+  return compareRelativeNumeric(aUnit, bUnit, direction);
+}
+
+function compareRelativeSpread(aSpread, bSpread, direction) {
+  return compareRelativeNumeric(aSpread, bSpread, direction);
 }
 
 // Legacy alias for tests migrating gradually
@@ -1359,9 +2013,17 @@ module.exports = {
   enrichSingleOffer,
   enrichOffersWithRelativeCost,
   compareRelativeCostUnit,
+  compareRelativeValueUnit,
+  compareRelativeSpread,
   enrichOffersWithScrapEquivalents,
   compareScrapEquivUnit,
   median,
   isValidOffer,
-  passesConfidenceGate
+  passesConfidenceGate,
+  detectPricingModel,
+  buildItemCurrencyPricingModels,
+  attachPricingModels,
+  scrapRatePerSoldItem,
+  scrapPerSoldItemFromPaymentListing,
+  refineItemValueFromPaymentListings
 };
