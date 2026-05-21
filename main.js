@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { enrichOffersWithRelativeCost } = require('./market-rates');
 
 // Keep a global reference of the window object
 let mainWindow;
@@ -866,6 +867,11 @@ ipcMain.handle('get-vending-data', async (event, server) => {
     // Disconnect after getting data
     rustplus.disconnect();
     activeConnection = null;
+
+    const { machines: enrichedVendingMachines, marketContext } = enrichOffersWithRelativeCost(
+      vendingMachines,
+      ITEM_NAMES
+    );
     
     return {
       success: true,
@@ -888,7 +894,8 @@ ipcMain.handle('get-vending-data', async (event, server) => {
       },
       mapSize,
       playerPosition,
-      vendingMachines
+      vendingMachines: enrichedVendingMachines,
+      marketContext
     };
     
   } catch (error) {

@@ -631,7 +631,7 @@ body::after {
 /* Shop List Header */
 .list-header {
     display: grid;
-    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 90px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 70px 70px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 14px 20px;
     background: rgba(0, 255, 0, 0.05);
@@ -678,7 +678,7 @@ body::after {
 /* Shop Row */
 .shop-row {
     display: grid;
-    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 90px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 70px 70px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 12px 20px;
     border-bottom: 1px solid rgba(0, 255, 0, 0.2);
@@ -779,6 +779,23 @@ body::after {
     font-weight: 700;
     font-size: 0.9rem;
     text-shadow: var(--glow);
+}
+
+.relative-cost,
+.relative-cost-each {
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: center;
+}
+
+.relative-cost-hint {
+    margin: 8px 0 0;
+    padding: 0 4px;
+    font-size: 0.75rem;
+    color: var(--muted);
+    font-style: italic;
 }
 
 /* No Results */

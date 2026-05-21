@@ -20,7 +20,9 @@ const SORT_HEADER_KEYS = {
     stock: 'stock',
     shop: 'shop',
     location: 'location',
-    distance: 'distance'
+    distance: 'distance',
+    relativeCost: 'relativeCost',
+    relativeCostEach: 'relativeCostUnit'
 };
 
 function getCostEach(costQty, itemQty) {
@@ -32,6 +34,45 @@ function getCostEach(costQty, itemQty) {
 function formatCostEach(costQty, itemQty) {
     const each = getCostEach(costQty, itemQty);
     return Number.isInteger(each) ? each : Number(each.toFixed(2));
+}
+
+const MIN_RELATIVE_COST_DISPLAY = 0.01;
+const MIN_RELATIVE_UNIT_DISPLAY = 0.0001;
+
+function formatRelativeNumber(value) {
+    if (value == null || !Number.isFinite(value) || value < MIN_RELATIVE_COST_DISPLAY) return '';
+    const rounded = Number(value.toFixed(2));
+    if (!Number.isFinite(rounded) || rounded < MIN_RELATIVE_COST_DISPLAY) return '';
+    return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+
+function formatRelativeUnitNumber(value) {
+    if (value == null || !Number.isFinite(value) || value <= 0) return '';
+    if (value < MIN_RELATIVE_UNIT_DISPLAY) {
+        const fine = Number(value.toFixed(6));
+        return Number.isFinite(fine) && fine > 0 ? String(fine) : '';
+    }
+    return formatRelativeNumber(value);
+}
+
+function relativeCostDatasetValue(value) {
+    return formatRelativeNumber(value) || '';
+}
+
+function relativeUnitDatasetValue(value) {
+    return formatRelativeUnitNumber(value) || '';
+}
+
+function updateRelativeCostHint(marketContext) {
+    const hint = document.getElementById('relativeCostBase');
+    if (!hint) return;
+    if (marketContext?.selectedBaseCurrencyName) {
+        hint.textContent = `Relative values shown in: ${marketContext.selectedBaseCurrencyName}`;
+        hint.style.display = 'block';
+    } else {
+        hint.textContent = '';
+        hint.style.display = 'none';
+    }
 }
 
 // DEBUG: Global function to inspect a specific shop by name
@@ -258,6 +299,8 @@ async function loadVendingData() {
                     `${result.serverInfo.size}`;
             }
             
+            updateRelativeCostHint(result.marketContext);
+
             // Render vending machines
             renderVendingMachines(result.vendingMachines);
         } else {
@@ -336,6 +379,8 @@ function renderVendingMachines(machines) {
             <div class="sortable-header" data-sort="costQty" onclick="handleColumnSort('costQty')">Cost Qty<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="costItem" onclick="handleColumnSort('costItem')">Cost Item<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="costEach" onclick="handleColumnSort('costEach')">Cost (Each)<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="relativeCost" onclick="handleColumnSort('relativeCost')">Relative Cost<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="relativeCostEach" onclick="handleColumnSort('relativeCostEach')">Relative Cost (Each)<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="stock" onclick="handleColumnSort('stock')">Stock<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="shop" onclick="handleColumnSort('shop')">Shop<span class="sort-indicator"></span></div>
             <div class="sortable-header" data-sort="location" onclick="handleColumnSort('location')">Location<span class="sort-indicator"></span></div>
@@ -357,6 +402,10 @@ function renderVendingMachines(machines) {
         const itemQty = item.quantity ?? 1;
         const costQty = item.costPerItem ?? 0;
         const costEach = getCostEach(costQty, itemQty);
+        const relativeCostDisplay = formatRelativeNumber(item.relativeCost);
+        const relativeEachDisplay = formatRelativeUnitNumber(item.relativeCostUnitPrice);
+        const relativeUnit = relativeUnitDatasetValue(item.relativeCostUnitPrice);
+        const relativeCost = relativeCostDatasetValue(item.relativeCost);
         
         return `
             <div class="shop-row ${outOfStock ? 'out-of-stock' : ''}" 
@@ -369,6 +418,8 @@ function renderVendingMachines(machines) {
                  data-price="${costQty}"
                  data-cost-each="${costEach}"
                  data-distance="${item.distance || Infinity}"
+                 data-relative-unit="${relativeUnit}"
+                 data-relative-cost="${relativeCost}"
                  data-original-display="">
                 <div class="item-qty" data-label="Item Qty">${itemQty}</div>
                 <div class="sale" data-label="Item">
@@ -379,6 +430,8 @@ function renderVendingMachines(machines) {
                     <span>${currencyName}</span>
                 </div>
                 <div class="cost-each" data-label="Cost (Each)">${formatCostEach(costQty, itemQty)}</div>
+                <div class="relative-cost" data-label="Relative Cost">${relativeCostDisplay}</div>
+                <div class="relative-cost-each" data-label="Relative Cost (Each)">${relativeEachDisplay}</div>
                 <div class="stock" data-label="Stock">${stock}</div>
                 <div class="shop-name" data-label="Shop">${item.machineName}</div>
                 <div class="location" data-label="Location">${gridPos}</div>
@@ -625,6 +678,34 @@ function compareShopRows(a, b, column, direction) {
             const distA = parseFloat(a.dataset.distance) || Infinity;
             const distB = parseFloat(b.dataset.distance) || Infinity;
             result = distA - distB;
+            break;
+        }
+        case 'relativeCost': {
+            const costA = a.dataset.relativeCost;
+            const costB = b.dataset.relativeCost;
+            const aMissing = costA === '' || !Number.isFinite(parseFloat(costA));
+            const bMissing = costB === '' || !Number.isFinite(parseFloat(costB));
+            if (aMissing && bMissing) return 0;
+            if (aMissing) return 1;
+            if (bMissing) return -1;
+            result = parseFloat(costA) - parseFloat(costB);
+            if (result === 0) {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
+            break;
+        }
+        case 'relativeCostUnit': {
+            const unitA = a.dataset.relativeUnit;
+            const unitB = b.dataset.relativeUnit;
+            const aMissing = unitA === '' || !Number.isFinite(parseFloat(unitA));
+            const bMissing = unitB === '' || !Number.isFinite(parseFloat(unitB));
+            if (aMissing && bMissing) return 0;
+            if (aMissing) return 1;
+            if (bMissing) return -1;
+            result = parseFloat(unitA) - parseFloat(unitB);
+            if (result === 0) {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
             break;
         }
         default:
