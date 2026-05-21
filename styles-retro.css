@@ -631,7 +631,7 @@ body::after {
 /* Shop List Header */
 .list-header {
     display: grid;
-    grid-template-columns: 2fr 160px 100px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 14px 20px;
     background: rgba(0, 255, 0, 0.05);
@@ -644,10 +644,41 @@ body::after {
     text-shadow: var(--glow);
 }
 
+.list-header .sortable-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s;
+}
+
+.list-header .sortable-header:hover {
+    color: var(--text);
+}
+
+.list-header .sortable-header.sorted {
+    color: var(--primary);
+}
+
+.list-header .sort-indicator {
+    font-size: 0.65rem;
+    opacity: 0.9;
+    line-height: 1;
+}
+
+.list-header .sort-indicator.sort-asc::after {
+    content: '▲';
+}
+
+.list-header .sort-indicator.sort-desc::after {
+    content: '▼';
+}
+
 /* Shop Row */
 .shop-row {
     display: grid;
-    grid-template-columns: 2fr 160px 100px 1.5fr 90px 90px;
+    grid-template-columns: 70px 1.5fr 70px 1.2fr 70px 90px 1.5fr 90px 90px;
     gap: 16px;
     padding: 12px 20px;
     border-bottom: 1px solid rgba(0, 255, 0, 0.2);
@@ -684,15 +715,39 @@ body::after {
     text-shadow: var(--glow);
 }
 
-.cost {
+.item-qty {
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-align: center;
+    text-shadow: var(--glow);
+}
+
+.cost-item {
     color: var(--text-secondary);
     font-size: 0.9rem;
     font-weight: 600;
 }
 
-.cost span {
+.cost-item span {
     color: var(--primary);
     font-weight: 700;
+    text-shadow: var(--glow);
+}
+
+.cost-qty {
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-align: center;
+    text-shadow: var(--glow);
+}
+
+.cost-each {
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-align: center;
     text-shadow: var(--glow);
 }
 

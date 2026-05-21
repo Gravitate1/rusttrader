@@ -9,6 +9,30 @@ let currentCategory = 'all';
 let ITEM_NAMES = {};  // Will be loaded from Corrosion Hour data
 let playerPosition = null;  // Store player position for distance calculations
 let mapSize = 4000;  // Store map size from server
+let sortState = { column: 'name', direction: 'asc' };
+
+const SORT_HEADER_KEYS = {
+    item: 'name',
+    itemQty: 'quantity',
+    costItem: 'currency',
+    costQty: 'price',
+    costEach: 'costEach',
+    stock: 'stock',
+    shop: 'shop',
+    location: 'location',
+    distance: 'distance'
+};
+
+function getCostEach(costQty, itemQty) {
+    const qty = itemQty || 1;
+    const cost = costQty ?? 0;
+    return cost / qty;
+}
+
+function formatCostEach(costQty, itemQty) {
+    const each = getCostEach(costQty, itemQty);
+    return Number.isInteger(each) ? each : Number(each.toFixed(2));
+}
 
 // DEBUG: Global function to inspect a specific shop by name
 window.debugShop = function(shopName) {
@@ -307,12 +331,15 @@ function renderVendingMachines(machines) {
     // Create header
     const header = `
         <div class="list-header">
-            <div>Item</div>
-            <div>Cost</div>
-            <div>Stock</div>
-            <div>Shop</div>
-            <div>Location</div>
-            <div>Distance</div>
+            <div class="sortable-header" data-sort="itemQty" onclick="handleColumnSort('itemQty')">Item Qty<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="item" onclick="handleColumnSort('item')">Item<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="costQty" onclick="handleColumnSort('costQty')">Cost Qty<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="costItem" onclick="handleColumnSort('costItem')">Cost Item<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="costEach" onclick="handleColumnSort('costEach')">Cost (Each)<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="stock" onclick="handleColumnSort('stock')">Stock<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="shop" onclick="handleColumnSort('shop')">Shop<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="location" onclick="handleColumnSort('location')">Location<span class="sort-indicator"></span></div>
+            <div class="sortable-header" data-sort="distance" onclick="handleColumnSort('distance')">Distance<span class="sort-indicator"></span></div>
         </div>
     `;
     
@@ -327,31 +354,41 @@ function renderVendingMachines(machines) {
         const distanceText = item.distance !== null && item.distance !== undefined 
             ? `${Math.round(item.distance)}m` 
             : '-';
+        const itemQty = item.quantity ?? 1;
+        const costQty = item.costPerItem ?? 0;
+        const costEach = getCostEach(costQty, itemQty);
         
         return `
             <div class="shop-row ${outOfStock ? 'out-of-stock' : ''}" 
                  data-item="${itemName.toLowerCase()}"
                  data-currency="${currencyName.toLowerCase()}"
                  data-shop="${item.machineName.toLowerCase()}"
+                 data-location="${gridPos}"
                  data-stock="${stock}"
-                 data-price="${item.costPerItem}"
+                 data-quantity="${itemQty}"
+                 data-price="${costQty}"
+                 data-cost-each="${costEach}"
                  data-distance="${item.distance || Infinity}"
                  data-original-display="">
-                <div class="sale">
-                    <span>${item.quantity > 1 ? `${item.quantity}x ` : ''}${itemName}</span>
+                <div class="item-qty" data-label="Item Qty">${itemQty}</div>
+                <div class="sale" data-label="Item">
+                    <span>${itemName}</span>
                 </div>
-                <div class="cost">
-                    <span>${item.costPerItem} ${currencyName}</span>
+                <div class="cost-qty" data-label="Cost Qty">${costQty}</div>
+                <div class="cost-item" data-label="Cost Item">
+                    <span>${currencyName}</span>
                 </div>
-                <div class="stock">${stock}</div>
-                <div class="shop-name">${item.machineName}</div>
-                <div class="location">${gridPos}</div>
-                <div class="distance">${distanceText}</div>
+                <div class="cost-each" data-label="Cost (Each)">${formatCostEach(costQty, itemQty)}</div>
+                <div class="stock" data-label="Stock">${stock}</div>
+                <div class="shop-name" data-label="Shop">${item.machineName}</div>
+                <div class="location" data-label="Location">${gridPos}</div>
+                <div class="distance" data-label="Distance">${distanceText}</div>
             </div>
         `;
     }).join('');
     
     shopsList.innerHTML = header + rows;
+    updateSortHeaders();
     
     // Make sure the container is visible
     shopsContainer.style.display = 'block';
@@ -361,6 +398,80 @@ function renderVendingMachines(machines) {
     
     // Apply any existing filters after rendering
     filterShops();
+}
+
+function sortByToState(value) {
+    switch (value) {
+        case 'price': return { column: 'price', direction: 'asc' };
+        case 'price_desc': return { column: 'price', direction: 'desc' };
+        case 'stock': return { column: 'stock', direction: 'desc' };
+        case 'distance': return { column: 'distance', direction: 'asc' };
+        case 'name':
+        default:
+            return { column: 'name', direction: 'asc' };
+    }
+}
+
+function stateToSortBy({ column, direction }) {
+    if (column === 'name' && direction === 'asc') return 'name';
+    if (column === 'price' && direction === 'asc') return 'price';
+    if (column === 'price' && direction === 'desc') return 'price_desc';
+    if (column === 'stock' && direction === 'desc') return 'stock';
+    if (column === 'distance' && direction === 'asc') return 'distance';
+    return null;
+}
+
+function defaultSortDirection(column) {
+    if (column === 'stock' || column === 'quantity') return 'desc';
+    return 'asc';
+}
+
+function syncSortByDropdown() {
+    const select = document.getElementById('sortBy');
+    if (!select) return;
+    const value = stateToSortBy(sortState);
+    if (value) select.value = value;
+}
+
+function updateSortHeaders() {
+    const headers = document.querySelectorAll('.list-header .sortable-header');
+    headers.forEach(header => {
+        const key = header.dataset.sort;
+        const column = SORT_HEADER_KEYS[key];
+        const indicator = header.querySelector('.sort-indicator');
+        const isActive = column === sortState.column;
+
+        header.classList.toggle('sorted', isActive);
+        if (indicator) {
+            indicator.className = 'sort-indicator';
+            if (isActive) {
+                indicator.classList.add(sortState.direction === 'asc' ? 'sort-asc' : 'sort-desc');
+            }
+        }
+    });
+}
+
+function onSortDropdownChange() {
+    const sortByEl = document.getElementById('sortBy');
+    if (sortByEl) sortState = sortByToState(sortByEl.value);
+    updateSortHeaders();
+    filterShops();
+}
+
+function handleColumnSort(headerKey) {
+    const column = SORT_HEADER_KEYS[headerKey];
+    if (!column) return;
+
+    if (sortState.column === column) {
+        sortState.direction = sortState.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+        sortState.column = column;
+        sortState.direction = defaultSortDirection(column);
+    }
+
+    syncSortByDropdown();
+    updateSortHeaders();
+    sortShops();
 }
 
 // Get grid position from coordinates
@@ -406,7 +517,6 @@ function filterShops() {
     const currencyFilter = document.getElementById('currencyFilter').value.toLowerCase();
     const shopNameFilter = document.getElementById('shopNameFilter').value.toLowerCase();
     const hideOutOfStock = document.getElementById('hideOutOfStock').checked;
-    const sortBy = document.getElementById('sortBy').value;
     
     const rows = document.querySelectorAll('.shop-row');
     let visibleCount = 0;
@@ -437,49 +547,105 @@ function filterShops() {
         }
     });
     
-    // Sort visible rows
-    sortShops(sortBy);
+    sortShops();
+    updateSortHeaders();
     
     // Update matching items count
     document.getElementById('matchingItems').textContent = visibleCount;
 }
 
+function compareShopRows(a, b, column, direction) {
+    const asc = direction === 'asc';
+    let result = 0;
+
+    switch (column) {
+        case 'name':
+            result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            break;
+        case 'quantity': {
+            const qtyA = parseInt(a.dataset.quantity) || 0;
+            const qtyB = parseInt(b.dataset.quantity) || 0;
+            result = qtyA - qtyB;
+            if (result === 0) {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
+            break;
+        }
+        case 'currency': {
+            result = (a.dataset.currency || '').localeCompare(b.dataset.currency || '');
+            if (result === 0) {
+                const priceA = parseInt(a.dataset.price) || 0;
+                const priceB = parseInt(b.dataset.price) || 0;
+                result = priceA - priceB;
+                if (result === 0) {
+                    result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+                }
+            }
+            break;
+        }
+        case 'price': {
+            const priceA = parseInt(a.dataset.price) || 0;
+            const priceB = parseInt(b.dataset.price) || 0;
+            if (priceA !== priceB) {
+                result = priceA - priceB;
+            } else {
+                result = (a.dataset.currency || '').localeCompare(b.dataset.currency || '');
+                if (result === 0) {
+                    result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+                }
+            }
+            break;
+        }
+        case 'costEach': {
+            const eachA = parseFloat(a.dataset.costEach) || 0;
+            const eachB = parseFloat(b.dataset.costEach) || 0;
+            if (eachA !== eachB) {
+                result = eachA - eachB;
+            } else {
+                result = (a.dataset.item || '').localeCompare(b.dataset.item || '');
+            }
+            break;
+        }
+        case 'stock': {
+            const stockA = parseInt(a.dataset.stock) || 0;
+            const stockB = parseInt(b.dataset.stock) || 0;
+            if (stockA === 0 && stockB === 0) return 0;
+            if (stockA === 0) return 1;
+            if (stockB === 0) return -1;
+            result = stockA - stockB;
+            break;
+        }
+        case 'shop':
+            result = (a.dataset.shop || '').localeCompare(b.dataset.shop || '');
+            break;
+        case 'location':
+            result = (a.dataset.location || '').localeCompare(b.dataset.location || '');
+            break;
+        case 'distance': {
+            const distA = parseFloat(a.dataset.distance) || Infinity;
+            const distB = parseFloat(b.dataset.distance) || Infinity;
+            result = distA - distB;
+            break;
+        }
+        default:
+            return 0;
+    }
+
+    return asc ? result : -result;
+}
+
 // Sort shops
-function sortShops(sortBy) {
+function sortShops() {
     const container = document.getElementById('shopsList');
+    if (!container) return;
+
     const header = container.querySelector('.list-header');
     const rows = Array.from(container.querySelectorAll('.shop-row'));
-    
-    // Sort all rows, not just visible ones
-    rows.sort((a, b) => {
-        switch(sortBy) {
-            case 'name':
-                return a.dataset.item.localeCompare(b.dataset.item);
-            case 'price':
-                return parseInt(a.dataset.price) - parseInt(b.dataset.price);
-            case 'price_desc':
-                return parseInt(b.dataset.price) - parseInt(a.dataset.price);
-            case 'stock':
-                // Sort by stock with out of stock (0) items at the bottom
-                const stockA = parseInt(a.dataset.stock) || 0;
-                const stockB = parseInt(b.dataset.stock) || 0;
-                if (stockA === 0 && stockB === 0) return 0;
-                if (stockA === 0) return 1;
-                if (stockB === 0) return -1;
-                return stockB - stockA;
-            case 'distance':
-                // Sort by distance (closest first)
-                const distA = parseFloat(a.dataset.distance) || Infinity;
-                const distB = parseFloat(b.dataset.distance) || Infinity;
-                return distA - distB;
-            default:
-                return 0;
-        }
-    });
-    
-    // Clear container and re-add sorted elements
+
+    rows.sort((a, b) => compareShopRows(a, b, sortState.column, sortState.direction));
+
     container.innerHTML = '';
-    container.appendChild(header);
+    if (header) container.appendChild(header);
     rows.forEach(row => container.appendChild(row));
 }
 

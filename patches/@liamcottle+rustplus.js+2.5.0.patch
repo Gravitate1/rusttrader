@@ -1,5 +1,34 @@
+diff --git a/node_modules/@liamcottle/rustplus.js/rustplus.js b/node_modules/@liamcottle/rustplus.js/rustplus.js
+index 4497096..2010ac3 100644
+--- a/node_modules/@liamcottle/rustplus.js/rustplus.js
++++ b/node_modules/@liamcottle/rustplus.js/rustplus.js
+@@ -74,8 +74,13 @@ class RustPlus extends EventEmitter {
+ 
+             this.websocket.on('message', (data) => {
+ 
+-                // decode received message
+-                var message = this.AppMessage.decode(data);
++                var message;
++                try {
++                    message = this.AppMessage.decode(data);
++                } catch (e) {
++                    this.emit('error', e);
++                    return;
++                }
+ 
+                 // check if received message is a response and if we have a callback registered for it
+                 if(message.response && message.response.seq && this.seqCallbacks[message.response.seq]){
+@@ -97,7 +102,7 @@ class RustPlus extends EventEmitter {
+                 }
+ 
+                 // fire message event for received messages that aren't handled by callback
+-                this.emit('message', this.AppMessage.decode(data));
++                this.emit('message', message);
+ 
+             });
+ 
 diff --git a/node_modules/@liamcottle/rustplus.js/rustplus.proto b/node_modules/@liamcottle/rustplus.js/rustplus.proto
-index d893865..89b4d93 100644
+index d893865..6f0d82e 100644
 --- a/node_modules/@liamcottle/rustplus.js/rustplus.proto
 +++ b/node_modules/@liamcottle/rustplus.js/rustplus.proto
 @@ -229,7 +229,7 @@ message AppInfo {
@@ -26,14 +55,18 @@ index d893865..89b4d93 100644
  	repeated AppTeamInfo.Member members = 2;
  	repeated AppTeamInfo.Note mapNotes = 3;
  	repeated AppTeamInfo.Note leaderMapNotes = 4;
-@@ -291,14 +291,14 @@ message AppTeamInfo {
+@@ -289,16 +289,16 @@ message AppTeamInfo {
+ 	message Member {
+ 		required uint64 steamId = 1;
  		required string name = 2;
- 		required float x = 3;
- 		required float y = 4;
+-		required float x = 3;
+-		required float y = 4;
 -		required bool isOnline = 5;
 -		required uint32 spawnTime = 6;
 -		required bool isAlive = 7;
 -		required uint32 deathTime = 8;
++		optional float x = 3;
++		optional float y = 4;
 +		optional bool isOnline = 5;
 +		optional uint32 spawnTime = 6;
 +		optional bool isAlive = 7;

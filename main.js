@@ -764,8 +764,7 @@ ipcMain.handle('get-vending-data', async (event, server) => {
             return memberSteamId === server.playerId;
           });
           
-          if (you) {
-            // Convert to world coordinates
+          if (you && you.x != null && you.y != null) {
             const worldX = you.x - (mapSize / 2);
             const worldY = you.y - (mapSize / 2);
             resolve({
@@ -774,6 +773,9 @@ ipcMain.handle('get-vending-data', async (event, server) => {
               name: you.name,
               isAlive: you.isAlive
             });
+          } else if (you) {
+            console.log('[PLAYER] Team member found but no position data');
+            resolve(null);
           } else {
             console.log('[PLAYER] Player not found in team members');
             resolve(null);
