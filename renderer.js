@@ -105,39 +105,6 @@ function updateRelativeCostHint(marketContext) {
     }
 }
 
-// DEBUG: Global function to inspect a specific shop by name
-window.debugShop = function(shopName) {
-    if (!vendingData || !vendingData.vendingMachines) {
-        console.error('No vending data loaded. Please refresh vending machines first.');
-        return;
-    }
-    
-    const shop = vendingData.vendingMachines.find(m => 
-        m.name.toLowerCase().includes(shopName.toLowerCase())
-    );
-    
-    if (!shop) {
-        console.error(`Shop containing "${shopName}" not found.`);
-        console.log('Available shops:', vendingData.vendingMachines.map(m => m.name));
-        return;
-    }
-    
-    console.log('=== SHOP DEBUG ===');
-    console.log('Shop name:', shop.name);
-    console.log('Shop object:', shop);
-    console.log('Shop keys:', Object.keys(shop));
-    
-    if (shop.sellOrders && shop.sellOrders.length > 0) {
-        console.log('\nAll sell orders:');
-        shop.sellOrders.forEach((order, idx) => {
-            console.log(`\nOrder ${idx + 1}:`);
-            console.log(JSON.stringify(order, null, 2));
-        });
-        console.log('\nOrder keys:', Object.keys(shop.sellOrders[0]));
-    }
-    console.log('==================');
-};
-
 // Initialize on load
 window.addEventListener('DOMContentLoaded', async () => {
     // Load item names first
@@ -301,26 +268,6 @@ async function loadVendingData() {
             mapSize = result.mapSize || 4000;
             playerPosition = result.playerPosition || null;
             
-            console.log('[VENDING] Map size:', mapSize);
-            console.log('[PLAYER] Position:', playerPosition);
-            
-            // DEBUG: Log first 5 shops to see NPC vs player shop data structure
-            if (result.vendingMachines && result.vendingMachines.length > 0) {
-                console.log('=== SHOP DATA DEBUG (First 5 shops) ===');
-                result.vendingMachines.slice(0, 5).forEach((machine, idx) => {
-                    console.log(`\n--- Shop ${idx + 1}: ${machine.name} ---`);
-                    console.log('Shop object keys:', Object.keys(machine));
-                    console.log('Number of sell orders:', machine.sellOrders?.length || 0);
-                    
-                    if (machine.sellOrders && machine.sellOrders.length > 0) {
-                        console.log('First sell order (full):');
-                        console.log(JSON.stringify(machine.sellOrders[0], null, 2));
-                        console.log('Sell order keys:', Object.keys(machine.sellOrders[0]));
-                    }
-                });
-                console.log('\n=== END SHOP DATA DEBUG ===\n');
-            }
-            
             // Update server info
             if (result.serverInfo) {
                 document.getElementById('playerCount').textContent = 
@@ -399,8 +346,6 @@ function renderVendingMachines(machines) {
         }
     });
     
-    console.log(`Rendering ${allItems.length} items from ${totalShops} shops`);
-
     // Create header
     const header = `
         <div class="list-header">

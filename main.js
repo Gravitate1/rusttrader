@@ -645,7 +645,6 @@ function calculateMapSize(mapData) {
 ipcMain.handle('get-vending-data', async (event, server) => {
   try {
     console.log(`Connecting to ${server.serverName}...`);
-    console.log(`Server details: IP=${server.serverIp}, Port=${server.appPort}, PlayerID=${server.playerId}`);
     
     // Disconnect existing connection if any
     if (activeConnection) {
@@ -678,8 +677,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
       rustplus.connect();
     });
     
-    console.log('Connected! Getting map data...');
-    
     // Get map data to calculate map size
     const mapInfo = await new Promise((resolve) => {
       const timeout = setTimeout(() => {
@@ -706,9 +703,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
     });
     
     const mapSize = mapInfo?.mapSize || 4000;
-    console.log('Map size:', mapSize);
-    
-    console.log('Getting server info...');
     
     // Get server info using callback
     const serverInfo = await new Promise((resolve) => {
@@ -730,8 +724,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
       });
     });
     
-    console.log('Fetching player position...');
-    
     // Try to get player position (will be null if not in team)
     const playerPosition = await new Promise((resolve) => {
       const timeout = setTimeout(() => {
@@ -744,7 +736,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
         
         // Check for error response (happens when not in a team)
         if (teamInfo?.response?.error) {
-          console.log('[PLAYER] Not in a team or error getting team info');
           resolve(null);
           return;
         }
@@ -754,7 +745,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
           const members = teamInfo.response.teamInfo.members;
           
           if (!members || members.length === 0) {
-            console.log('[PLAYER] No team members found - likely solo player');
             resolve(null);
             return;
           }
@@ -774,21 +764,14 @@ ipcMain.handle('get-vending-data', async (event, server) => {
               name: you.name,
               isAlive: you.isAlive
             });
-          } else if (you) {
-            console.log('[PLAYER] Team member found but no position data');
-            resolve(null);
           } else {
-            console.log('[PLAYER] Player not found in team members');
             resolve(null);
           }
         } else {
-          console.log('[PLAYER] Invalid team info structure');
           resolve(null);
         }
       });
     });
-    
-    console.log('Fetching map markers...');
     
     // Get map markers using callback
     const vendingMachines = await new Promise((resolve) => {
@@ -799,7 +782,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
       
       rustplus.getMapMarkers((message) => {
         clearTimeout(timeout);
-        console.log('Map markers response received');
         
         if (message?.response?.error) {
           console.error('Map markers error:', message.response.error);
@@ -811,11 +793,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
         
         if (message && message.response && message.response.mapMarkers && message.response.mapMarkers.markers) {
           markers = message.response.mapMarkers.markers;
-          console.log(`Found ${markers.length} total markers`);
-          
-          // Log marker types
-          const types = [...new Set(markers.map(m => m.type))];
-          console.log('Marker types present:', types);
           
           // Filter for vending machines (type 3) and convert coordinates
           const vending = markers
@@ -824,27 +801,6 @@ ipcMain.handle('get-vending-data', async (event, server) => {
               // Convert to world coordinates
               const worldX = marker.x - (mapSize / 2);
               const worldY = marker.y - (mapSize / 2);
-              
-              console.log('Vending machine found:', marker.name, 'Sell orders:', marker.sellOrders?.length || 0);
-              
-              // DEBUG: Log sell order details for NPC shops to investigate discount/bonus fields
-              if (marker.name && (marker.name.includes('Outpost') || marker.name.includes('Bandit') || marker.name.includes('NPC'))) {
-                console.log('=== NPC SHOP DEBUG ===');
-                console.log('Shop name:', marker.name);
-                console.log('Shop type:', marker.type);
-                console.log('All marker fields:', Object.keys(marker));
-                if (marker.sellOrders && marker.sellOrders.length > 0) {
-                  console.log('Number of sell orders:', marker.sellOrders.length);
-                  console.log('First sell order (full object):', JSON.stringify(marker.sellOrders[0], null, 2));
-                  console.log('All fields in first sell order:', Object.keys(marker.sellOrders[0]));
-                  
-                  // Log a few more orders if available
-                  if (marker.sellOrders.length > 1) {
-                    console.log('Second sell order (full object):', JSON.stringify(marker.sellOrders[1], null, 2));
-                  }
-                }
-                console.log('======================');
-              }
               
               return {
                 id: marker.id,
@@ -855,10 +811,8 @@ ipcMain.handle('get-vending-data', async (event, server) => {
               };
             });
           
-          console.log(`Filtered to ${vending.length} vending machines`);
           resolve(vending);
         } else {
-          console.log('No markers found in response');
           resolve([]);
         }
       });
