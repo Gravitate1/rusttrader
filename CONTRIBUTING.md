@@ -127,12 +127,20 @@ Understanding the codebase:
 - Fetches item data from Corrosion Hour
 - Connects to Rust+ servers
 - Stores server data locally
+- Enriches vending data via `enrichOffersWithRelativeCost()` from `market-rates.js` before sending to the renderer
+
+### Market rates (`market-rates.js`)
+- Builds a server-derived exchange graph from live vending listings
+- Selects a base currency (typically Scrap) and resolves multi-hop rates
+- Adds `relativeCost`, `relativeValue`, `relativeSpread`, and related fields to each offer
+- Leaves fields blank when graph confidence is insufficient (never guesses)
 
 ### Renderer Process (`renderer.js`)
 - UI logic and event handling
 - Filtering and searching
 - Theme management
 - Display formatting
+- Click-to-sort shop table columns and base-currency hint for relative pricing
 
 ### Preload Script (`preload.js`)
 - Secure bridge between main and renderer
@@ -142,6 +150,10 @@ Understanding the codebase:
 - `@liamcottle/rustplus.js` - Rust+ protocol
 - `@liamcottle/push-receiver` - FCM notifications
 - `cheerio` - HTML parsing for item data
+
+### Testing
+- Run `npm test` before submitting a PR (market-rates unit tests)
+- Follow the manual checklist in **Testing Your Changes** above for pairing, UI, and themes
 
 ## License
 

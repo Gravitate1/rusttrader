@@ -16,10 +16,16 @@ Rust Trader is an Electron-based desktop app that connects to your Rust servers 
 - 🎨 **Multiple Themes** - Choose between Rust, Retro CRT, or Modern themes
 - 💾 **Local Data Storage** - All credentials and server data stored locally on your machine
 - 🔄 **Auto Item Database** - Automatically fetches item names and IDs from Corrosion Hour
+- 📋 **Sortable Shop Columns** - Click any table header to sort (item, cost, stock, shop, distance, and relative pricing fields)
+- 💱 **Relative Pricing** - Server-derived relative cost, value, and spread normalized to a base currency (typically Scrap)
+- ➗ **Cost (Each)** - Per-item payment (`Cost Qty ÷ Item Qty`) without mental math
+- ℹ️ **Base Currency Hint** - Shows which currency relative columns use for the current refresh
 
 ## Screenshots
 
 ![Rust Trader Banner](screenshots/screenshot-1.png)
+
+![Relative pricing columns and sortable shop table](screenshots/screenshot-2-relative-columns.png)
 
 ## How It Works
 
@@ -86,6 +92,29 @@ Once paired, it can fetch:
 - **Sort By** - Sort by item name, price, stock, or distance
 - **Hide Out of Stock** - Only show items currently in stock
 
+### Relative pricing columns
+
+When vending data loads, Rust Trader builds exchange rates from **all shops on that server** and enriches each listing. Values refresh when you reload vending data.
+
+A hint above the table shows the base currency, for example: `Relative cost & value shown in: Scrap`.
+
+| Column | Meaning |
+|--------|---------|
+| **Relative Value** | Scrap-equivalent value of the **full stack** being sold |
+| **Relative Value (Each)** | Per-unit relative value |
+| **Cost (Each)** | Payment per one sold item (`Cost Qty ÷ Item Qty`); raw deal math, not scrap-normalized |
+| **Relative Cost** | Scrap-equivalent cost for the **full payment** |
+| **Relative Cost (Each)** | Per-unit relative cost |
+| **Relative Spread** | Relative value minus relative cost (same units) |
+
+**Blank cells** mean there is not enough exchange data to price that listing reliably. That is intentional, not a bug.
+
+**Tips:**
+- Click any column header to sort ascending or descending (arrow indicator on the active column).
+- Sort by **Relative Spread** to find listings where value exceeds cost.
+
+See the [relative pricing screenshot](#screenshots) for the full column layout.
+
 ### Distance Calculation
 
 If you're in a team on the server, Rust Trader can calculate the distance from your current position to each vending machine. This helps you find the nearest shops.
@@ -96,13 +125,24 @@ If you're in a team on the server, Rust Trader can calculate the distance from y
 rust-trader-electron/
 ├── main.js              # Electron main process
 ├── renderer.js          # UI logic and rendering
+├── market-rates.js      # Server-derived exchange graph and relative pricing
 ├── preload.js          # Secure IPC bridge
 ├── index.html          # Main UI
 ├── styles.css          # Modern theme
 ├── styles-rust.css     # Rust theme
 ├── styles-retro.css    # Retro CRT theme
+├── market-rates.test.js
+├── market-rates-bulk-valuation.test.js
 ├── package.json        # Dependencies and scripts
 └── patches/            # rustplus.js patch
+```
+
+## Development
+
+Run unit tests for market-rate logic:
+
+```bash
+npm test
 ```
 
 ## Building
