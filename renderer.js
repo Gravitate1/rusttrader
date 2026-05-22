@@ -401,44 +401,6 @@ function renderVendingMachines(machines) {
     
     console.log(`Rendering ${allItems.length} items from ${totalShops} shops`);
 
-    // #region agent log
-    let bpWithValue = 0;
-    let bpDisplayBlank = 0;
-    const bpSample = [];
-    for (const item of allItems) {
-        const name = getItemName(item.itemId).toLowerCase();
-        if (!name.includes('blueprint')) continue;
-        if (bpSample.length < 3) {
-            bpSample.push({
-                itemQty: item.quantity,
-                costQty: item.costPerItem,
-                relativeValue: item.relativeValue,
-                relativeValueUnitPrice: item.relativeValueUnitPrice,
-                relativeCostUnitPrice: item.relativeCostUnitPrice,
-                costEachDisplay: formatCostEach(item.costPerItem, item.quantity)
-            });
-        }
-        if (item.relativeValue != null && Number.isFinite(item.relativeValue)) {
-            bpWithValue++;
-            const display = formatRelativeValueNumber(item.relativeValue);
-            if (!display) bpDisplayBlank++;
-        }
-    }
-    fetch('http://127.0.0.1:7369/ingest/44f44534-d7e5-450d-8927-d2fac007dc43', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'a0a398' },
-        body: JSON.stringify({
-            sessionId: 'a0a398',
-            hypothesisId: 'H2',
-            location: 'renderer.js:renderVendingMachines',
-            message: 'blueprint relative display sample',
-            data: { bpWithValue, bpDisplayBlank, bpSample },
-            timestamp: Date.now(),
-            runId: 'post-fix-payment'
-        })
-    }).catch(() => {});
-    // #endregion
-    
     // Create header
     const header = `
         <div class="list-header">
